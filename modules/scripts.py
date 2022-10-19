@@ -58,6 +58,9 @@ def load_scripts(basedir):
     for filename in sorted(os.listdir(basedir)):
         path = os.path.join(basedir, filename)
 
+        if os.path.splitext(path)[1].lower() != '.py':
+            continue
+
         if not os.path.isfile(path):
             continue
 
@@ -93,6 +96,7 @@ def wrap_call(func, filename, funcname, *args, default=None, **kwargs):
 class ScriptRunner:
     def __init__(self):
         self.scripts = []
+        self.titles = []
 
     def setup_ui(self, is_img2img):
         for script_class, path in scripts_data:
@@ -104,9 +108,10 @@ class ScriptRunner:
 
             self.scripts.append(script)
 
-        titles = [wrap_call(script.title, script.filename, "title") or f"{script.filename} [error]" for script in self.scripts]
+        self.titles = [wrap_call(script.title, script.filename, "title") or f"{script.filename} [error]" for script in self.scripts]
 
-        dropdown = gr.Dropdown(label="Script", choices=["None"] + titles, value="None", type="index")
+        dropdown = gr.Dropdown(label="Script", choices=["None"] + self.titles, value="None", type="index")
+        dropdown.save_to_config = True
         inputs = [dropdown]
 
         for script in self.scripts:
@@ -136,6 +141,15 @@ class ScriptRunner:
 
             return [ui.gr_show(True if i == 0 else args_from <= i < args_to) for i in range(len(inputs))]
 
+        def init_field(title):
+            if title == 'None':
+                return
+            script_index = self.titles.index(title)
+            script = self.scripts[script_index]
+            for i in range(script.args_from, script.args_to):
+                inputs[i].visible = True
+
+        dropdown.init_field = init_field
         dropdown.change(
             fn=select_script,
             inputs=[dropdown],
@@ -162,6 +176,40 @@ class ScriptRunner:
 
         return processed
 
+    def reload_sources(self):
+        for si, script in list(enumerate(self.scripts)):
+            with open(script.filename, "r", encoding="utf8") as file:
+                args_from = script.args_from
+                args_to = script.args_to
+                filename = script.filename
+                text = file.read()
+
+                from types import ModuleType
+
+                compiled = compile(text, filename, 'exec')
+                module = ModuleType(script.filename)
+                exec(compiled, module.__dict__)
+
+                for key, script_class in module.__dict__.items():
+                    if type(script_class) == type and issubclass(script_class, Script):
+                        self.scripts[si] = script_class()
+                        self.scripts[si].filename = filename
+                        self.scripts[si].args_from = args_from
+                        self.scripts[si].args_to = args_to
 
 scripts_txt2img = ScriptRunner()
 scripts_img2img = ScriptRunner()
+
+def reload_script_body_only():
+    scripts_txt2img.reload_sources()
+    scripts_img2img.reload_sources()
+
+
+def reload_scripts(basedir):
+    global scripts_txt2img, scripts_img2img
+
+    scripts_data.clear()
+    load_scripts(basedir)
+
+    scripts_txt2img = ScriptRunner()
+    scripts_img2img = ScriptRunner()
